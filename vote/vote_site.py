@@ -1,9 +1,9 @@
 import time
 import unittest
 
-# 一周换算的秒数
 from redis import Redis
 
+# 一周换算的秒数
 ONE_WEEK_IN_SCORES = 7 * 86400
 
 # 每一票对应的评分数
@@ -101,7 +101,7 @@ def get_articles(conn: Redis, page: int, order: str = 'score:') -> list:
     return articles
 
 
-def add_remove_groups(conn: Redis, article_id: str, to_add: list = [], to_remove: list = []) -> None:
+def add_remove_groups(conn: Redis, article_id: str, to_add=None, to_remove=None) -> None:
     """
     添加一篇文章到群组，或者从群组中移除某一篇文章。
 
@@ -114,6 +114,13 @@ def add_remove_groups(conn: Redis, article_id: str, to_add: list = [], to_remove
     :param to_remove:   要移除该文章的群组列表
     :return:
     """
+    # 使用哨兵值表示默认的空列表，
+    # 保证每次函数调用都会新建一个列表
+    if to_add is None:
+        to_add = []
+    if to_remove is None:
+        to_remove = []
+
     article = 'article:' + article_id
     # 添加文章到群组
     for group in to_add:
