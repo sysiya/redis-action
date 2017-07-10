@@ -264,7 +264,7 @@ class Inventory(object):
         return {'id': self.id, 'data': '要缓存的数据', 'cached': time.time()}
 
 
-def schedule_row_cache(conn: Redis, row_id: str, delay: int) -> None:
+def schedule_row_cache(conn: Redis, row_id: str, delay: float) -> None:
     """
     对要缓存的数据行进行调度，为每行缓存数据设置缓存延迟时间（即该数据行下一次被缓存的时间间隔）。
 
