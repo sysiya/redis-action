@@ -27,7 +27,7 @@ def article_vote(conn: Redis, user: str, article: str):
         return
 
     # 取出文章ID
-    article_id = article.partition(':')[1]
+    article_id = article.partition(':')[2]
     # 如果用户第一次给该文章投票，
     # 增加文章的投票次数与评分
     if conn.sadd('voted:' + article_id, user):
@@ -73,6 +73,7 @@ def post_article(conn: Redis, user: str, title: str, link: str) -> str:
     return article_id
 
 
+# 页面大小
 ARTICLE_PRE_PAGE = 25
 
 
@@ -157,7 +158,10 @@ class Test(unittest.TestCase):
     # 开始测试前
     def setUp(self):
         import redis
-        self.conn = redis.Redis(db=15)
+
+        # 设置 decode_responses=True，
+        # 在 python3 环境下将返回 str 类型，而不是 byte 类型
+        self.conn = redis.Redis(db=15, decode_responses=True)
 
     # 测试结束后
     def tearDown(self):
