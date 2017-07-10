@@ -169,6 +169,27 @@ def is_dynamic(request: str) -> bool:
     return '_' in query
 
 
+def rescale_viewed(conn: Redis) -> None:
+    """守护进程函数
+    优化页面缓存，低内存占用率。
+
+    当浏览记录超过 2W 条时，清空多余的不流行的商品页面缓存，
+    保留前 2W 条最流行的商品的缓存页面。
+
+    每次删除操作都将浏览次数减半，即降低分数的数值，但排名不变。
+
+    :param conn: Redis 连接
+    :return:
+    """
+    while not QUIT:
+        # 删除排名再 20000 名之后的浏览记录
+        conn.zremrangebyrank('viewed:', 20000, -1)
+        # 将浏览次数降低为原来的一半
+        conn.zinterstore('viewed:', {'viewed:': .5})
+        # 5 分钟后重试
+        time.sleep(300)
+
+
 def can_cache(conn: Redis, request: str) -> bool:
     """
     判断请求是否可以被缓存。
