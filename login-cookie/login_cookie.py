@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import unittest
@@ -40,11 +41,14 @@ def update_token(conn: Redis, token: str, user: str, item: str = None) -> None:
     if item:
         conn.zadd('viewed:' + token, item, timestamp)
         conn.zremrangebyrank('viewed:' + token, 0, -26)
-        # 为缓存页面，记录所有用户的浏览记录
+        # 为缓存页面，记录所有用户的浏览记录。
+        # 每一件商品浏览一次，对应的分数就减少 1 分，
+        # 这样浏览次数越多的商品就越靠前。
         conn.zincrby('viewed:', item, -1)
 
+
 QUIT = False
-LIMIT = 10000000  #令牌上限为 1000W，开发与测试时可调小
+LIMIT = 10000000  # 令牌上限为 1000W，开发与测试时可调小
 
 
 def clean_sessions(conn: Redis) -> None:
@@ -215,12 +219,87 @@ def cache_request(conn: Redis, request: str, callback: any) -> str:
     # 若没有缓存，生成页面并缓存
     if not content:
         content = callback(request)
-        conn.setex(page_key, content, 300)  #缓存 5 分钟
+        conn.setex(page_key, content, 300)  # 缓存 5 分钟
 
     return content
 
 
 # endregion
+
+# region 缓存数据行
+class Inventory(object):
+    """
+    商品库存类，这里主要模拟返回数据库的实际数据
+    """
+
+    def __init__(self, inv_id):
+        self.id = inv_id
+
+    @classmethod
+    def get(cls, inv_id):
+        return Inventory(inv_id)
+
+    def to_dict(self):
+        return {'id': self.id, 'data': '要缓存的数据', 'cached': time.time()}
+
+
+def schedule_row_cache(conn: Redis, row_id: str, delay: int) -> None:
+    """
+    对要缓存的数据行进行调度，为每行缓存数据设置缓存延迟时间（即该数据行下一次被缓存的时间间隔）。
+
+    这里的数据行指用户需要频繁读取关系数据库存储在硬盘里的数据。
+
+    :param conn:    Redis 连接
+    :param row_id:  数据行 ID
+    :param delay:   数据行缓存延迟时间
+    :return:
+    """
+    # 设置要缓存的数据行的延迟值
+    conn.zadd('delay:', row_id, delay)
+    # 立即对要缓存的数据行进行调度
+    conn.zadd('schedule:', row_id, time.time())
+
+
+def cache_rows(conn):
+    """
+    守护进程函数，用于定时缓存数据行。
+
+    :param conn:
+    :return:
+    """
+    while not QUIT:
+        # 尝试获取下一条需要缓存的数据行及该行的调度时间戳
+        # 返回 0 | 1 个元组的列表
+        next_row = conn.zrange('schedule:', 0, 0, withscores=True)
+
+        # 暂时没有行需要被缓存或
+        # 需要缓存的数据行的调度时间（已缓存过的要加上延迟）大于当前时间，
+        # 休眠 50 毫秒后重试
+        now = time.time()
+        if not next_row or next_row[0][1] > now:
+            time.sleep(.05)
+            continue
+
+        # 获取下一条需要缓存的数据行的缓存延迟时间
+        row_id = next_row[0][0]
+        delay = conn.zscore('delay:', row_id)
+        # 如果数据行的缓存延迟时间 <= 0，不再缓存该数据行
+        if delay <= 0:
+            conn.zrem('delay:', row_id)
+            conn.zrem('schedule:', row_id)
+            conn.delete('inventory:' + row_id)
+            continue
+
+        # 从库存中读取数据行
+        row = Inventory.get(row_id)
+        # 更新调度时间（当度过缓存延迟时间之后再缓存）
+        conn.zadd('schedule:', row_id, now + delay)
+        # 缓存数据行的 JSON 格式
+        conn.set('inventory:' + row_id, json.dumps(row.to_dict()))
+
+
+# endregion
+
 
 # region 测试
 class Test(unittest.TestCase):
@@ -234,8 +313,9 @@ class Test(unittest.TestCase):
         conn = self.conn
 
         # 删除测试数据
-        to_del = (
-            conn.keys('login:*') + conn.keys('viewed:') + conn.keys('recent:'))
+        to_del = (conn.keys('login:*') + conn.keys('viewed:*') + conn.keys('recent:*') +
+                  conn.keys('cart:*') + conn.keys('cache:*') + conn.keys('delay:*') +
+                  conn.keys('schedule:*') + conn.keys('inventory:*'))
         if to_del:
             conn.delete(*to_del)
 
@@ -395,6 +475,63 @@ class Test(unittest.TestCase):
         self.assertFalse(can_cache(conn, 'https://www.jd.com/'))
         # 测试包含 '_' 的动态请求
         self.assertFalse(can_cache(conn, 'https://www.jd.com/?item=ThinkPad&_=123456'))
+
+    def test_cache_rows(self):
+        import pprint
+        conn = self.conn
+
+        print('首先，让我们每 5 秒缓存 MacBook Pro 的页面')
+        schedule_row_cache(conn, 'MacBook Pro', 5)
+
+        print('我们已成功定义调度任务：')
+        # 获取所有的调度任务
+        # 返回 n (n >= 0) 个元组的列表
+        s = conn.zrange('schedule:', 0, -1, withscores=True)
+        pprint.pprint(s)
+
+        self.assertTrue(s)
+
+        print('接着，我们启动一个缓存线程，来缓存数据')
+        # 启动守护线程，缓存数据行
+        t = threading.Thread(target=cache_rows, args=(conn,))
+        t.setDaemon(1)
+        t.start()
+
+        time.sleep(1)
+        print('我们缓存的数据：')
+        # 获取缓存的数据
+        r = conn.get('inventory:MacBook Pro')
+        print(repr(r))
+        print()
+        self.assertTrue(r)
+
+        print('过 5 秒之后，我们再检查缓存的数据...')
+        time.sleep(5)
+        print('注意现在数据已经产生了变化')
+        # 此时数据的延时时间已重设
+        r2 = conn.get('inventory:MacBook Pro')
+        print(repr(r2))
+        print()
+        self.assertTrue(r2)
+        self.assertTrue(r != r2)
+
+        print('让我们强制清空缓存')
+        # 删除缓存数据
+        schedule_row_cache(conn, 'MacBook Pro', -1)
+        time.sleep(1)
+        # 尝试获取缓存数据
+        r = conn.get('inventory:MacBook Pro')
+        print('是否已清空缓存？', not r)
+        print()
+        self.assertFalse(r)
+
+        # 终止缓存线程
+        global QUIT
+        QUIT = True
+        time.sleep(2)
+        if t.isAlive():
+            raise Exception('数据库缓存线程还存活?!')
+
 
 # endregion
 
