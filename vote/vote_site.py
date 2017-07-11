@@ -92,10 +92,18 @@ def get_articles(conn: Redis, page: int, order: str = 'score:') -> list:
 
     # 获取多个文章ID
     article_ids = conn.zrevrange(order, start, end)  # redis 默认从小到大排序，故使用 ZREVRANGE 方法反序获取
-    articles = []
-    # 获取每篇文章的详细信息
+
+    # 创建事务流水线对象，执行一个事务操作，
+    # 减少与 Redis 服务器的通信次数，提升性能
+    pipeline = conn.pipeline()
     for article_id in article_ids:
-        article_data = conn.hgetall(article_id)
+        pipeline.hgetall(article_id)
+    result = pipeline.execute()
+
+    # 获取每篇文章的详细信息
+    articles = []
+    for index, article_id in enumerate(article_ids):
+        article_data = result[index]
         article_data['id'] = article_id
         articles.append(article_data)
 
