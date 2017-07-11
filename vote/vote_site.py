@@ -16,7 +16,6 @@ def article_vote(conn: Redis, user: str, article: str):
     用户给文章投票。
 
     :param conn:    Redis 连接。
-    :type conn: Redis
     :param user:    投票用户。
     :param article: 投票文章的键名，形如：article:83234
     :return:
@@ -47,14 +46,14 @@ def article_vote(conn: Redis, user: str, article: str):
                 # 当前用户还未给该文章投过票
                 pipeline.multi()
                 pipeline.sadd(voted, user)
-                pipeline.expire(voted, int(expired - now))  #设置过期时间，过期自动删除当前文章投票用户清单
+                pipeline.expire(voted, int(expired - now))  # 设置过期时间，过期自动删除当前文章投票用户清单
                 pipeline.zincrby('score:' + article_id, VOTE_SCORE)
                 pipeline.hincrby(article, 'votes', 1)
                 pipeline.execute()
             else:
                 # 当前用户已投过票，取消对投票用户清单的观测
                 pipeline.unwatch()
-            return  #投票成功或无需投票，返回
+            return  # 投票成功或无需投票，返回
         except redis.exceptions.WatchError:
             # 重新设置当前时间，然后重新投票
             now = time.time()
@@ -72,8 +71,8 @@ def post_article(conn: Redis, user: str, title: str, link: str) -> str:
     :return:    新文章ID
     """
     # 生成一个新的文章ID
-    # 使用事务，防止多人争抢同一个文章ID
-    article_id = str(conn.pipeline().incr('article:').execute())
+    # Redis 单命令都是原子操作，故不需要事务来确保原子性
+    article_id = str(conn.incr('article:'))
 
     # 将发布文章的用户添加到该文章的已投票用户的名单中
     voted = 'voted:' + article_id
@@ -113,7 +112,7 @@ def get_articles(conn: Redis, page: int, order: str = 'score:') -> list:
     :return:        返回指定页面的多篇有序文章
     """
     # 设置获取一页文章的起始索引和结束索引
-    start = (page - 1) * ARTICLE_PRE_PAGE
+    start = max(page - 1, 0) * ARTICLE_PRE_PAGE  # 使用 max 函数，避免起始页面为负数的情况
     end = start + ARTICLE_PRE_PAGE - 1
 
     # 获取多个文章ID
@@ -122,14 +121,16 @@ def get_articles(conn: Redis, page: int, order: str = 'score:') -> list:
     # 创建事务流水线对象，执行一个事务操作，
     # 减少与 Redis 服务器的通信次数，提升性能
     pipeline = conn.pipeline()
+
+    # 准备获取每一篇文章的内容
     for article_id in article_ids:
         pipeline.hgetall(article_id)
-    result = pipeline.execute()
+
+    # map(lambda x: pipeline.hgetall(x), article_ids)   # map 行不通?!
 
     # 获取每篇文章的详细信息
     articles = []
-    for index, article_id in enumerate(article_ids):
-        article_data = result[index]
+    for article_id, article_data in zip(article_ids, pipeline.execute()):  # 使用 zip 函数将两个 list 合并成 tuple
         article_data['id'] = article_id
         articles.append(article_data)
 
