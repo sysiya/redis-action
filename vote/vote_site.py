@@ -31,8 +31,11 @@ def article_vote(conn: Redis, user: str, article: str):
     # 如果用户第一次给该文章投票，
     # 增加文章的投票次数与评分
     if conn.sadd('voted:' + article_id, user):
-        conn.zincrby('score:', article, VOTE_SCORE)
-        conn.hincrby(article, 'votes', 1)
+        # 使用事务保证操作的原子性
+        conn.pipeline()\
+            .zincrby('score:', article, VOTE_SCORE)\
+            .hincrby(article, 'votes', 1)\
+            .execute()
 
 
 def post_article(conn: Redis, user: str, title: str, link: str) -> str:
@@ -47,7 +50,8 @@ def post_article(conn: Redis, user: str, title: str, link: str) -> str:
     :return:    新文章ID
     """
     # 生成一个新的文章ID
-    article_id = str(conn.incr('article:'))
+    # 使用事务，防止多人争抢同一个文章ID
+    article_id = str(conn.pipeline().incr('article:').excute())
 
     # 将发布文章的用户添加到该文章的已投票用户的名单中
     voted = 'voted:' + article_id
