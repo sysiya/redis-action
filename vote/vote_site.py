@@ -1,6 +1,7 @@
 import time
 import unittest
 
+import redis
 from redis import Redis
 
 # 一周换算的秒数
@@ -20,22 +21,43 @@ def article_vote(conn: Redis, user: str, article: str):
     :param article: 投票文章的键名，形如：article:83234
     :return:
     """
+    # 获取文章的发表时间
+    posted = conn.zscore('time:', article)
     # 计算文章截止投票时间
-    cutoff = time.time() - ONE_WEEK_IN_SCORES
-    # 当文章发布时间在一周之前，不允许投票
-    if conn.zscore('time:', article) < cutoff:
-        return
+    expired = posted + ONE_WEEK_IN_SCORES
+    # 获取当前时间
+    now = time.time()
 
-    # 取出文章ID
-    article_id = article.partition(':')[2]
-    # 如果用户第一次给该文章投票，
-    # 增加文章的投票次数与评分
-    if conn.sadd('voted:' + article_id, user):
-        # 使用事务保证操作的原子性
-        conn.pipeline()\
-            .zincrby('score:', article, VOTE_SCORE)\
-            .hincrby(article, 'votes', 1)\
-            .execute()
+    # 提取文章ID
+    article_id = article.partition(':')[-1]
+    # 当前文章投票用户清单列表
+    voted = 'voted:' + article_id
+
+    # 使用事务流水线
+    pipeline = conn.pipeline()
+
+    # 如果还没到投票过期时间
+    while now < expired:
+        try:
+            # 使用 watch 命令观测当前文章投票用户清单是否发生变化，
+            # 如果发生了变化（比如有其他用户为当前文章投了一票），
+            # 那么抛出 redis.exceptions.WatchError
+            pipeline.watch(voted)
+            if not pipeline.sismember(voted, user):
+                # 当前用户还未给该文章投过票
+                pipeline.multi()
+                pipeline.sadd(voted, user)
+                pipeline.expire(voted, int(expired - now))  #设置过期时间，过期自动删除当前文章投票用户清单
+                pipeline.zincrby('score:' + article_id, VOTE_SCORE)
+                pipeline.hincrby(article, 'votes', 1)
+                pipeline.execute()
+            else:
+                # 当前用户已投过票，取消对投票用户清单的观测
+                pipeline.unwatch()
+            return  #投票成功或无需投票，返回
+        except redis.exceptions.WatchError:
+            # 重新设置当前时间，然后重新投票
+            now = time.time()
 
 
 def post_article(conn: Redis, user: str, title: str, link: str) -> str:

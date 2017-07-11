@@ -48,7 +48,7 @@ def update_token(conn: Redis, token: str, user: str, item: str = None) -> None:
 
 
 QUIT = False
-LIMIT = 10000000  # 令牌上限为 1000W，开发与测试时可调小
+LIMIT = 10000000  #令牌上限为 1000W，开发与测试时可调小
 
 
 def clean_sessions(conn: Redis) -> None:
