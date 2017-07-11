@@ -51,7 +51,7 @@ def post_article(conn: Redis, user: str, title: str, link: str) -> str:
     """
     # 生成一个新的文章ID
     # 使用事务，防止多人争抢同一个文章ID
-    article_id = str(conn.pipeline().incr('article:').excute())
+    article_id = str(conn.pipeline().incr('article:').execute())
 
     # 将发布文章的用户添加到该文章的已投票用户的名单中
     voted = 'voted:' + article_id
