@@ -26,6 +26,9 @@ def log_recent(conn: Redis, name: str, message: str,
     """
     记录最近日志消息，存储到 Redis 服务器。
 
+    可选参数 pipe 用来接受 log_common() 传递的 Redis 流水线对象，
+    保证事务的一致性，同时减少通信次数，提升性能。
+
     :param conn:        Redis 连接
     :param name:        日志记录者
     :param message:     日志消息内容
@@ -52,6 +55,22 @@ def log_recent(conn: Redis, name: str, message: str,
 def log_common(conn: Redis, name: str, message: str,
                severity: Union[int, str] = logging.INFO,
                timeout: int = 5) -> None:
+    """
+    在记录日志内容之前，记录日志在某段时间内出现的次数（频率）。
+
+    记录时间范围取整点开始到下个整点结束，比如 6:00 - 6:59，
+    实际记录时间取整点时刻，即 6:00。
+
+    为避免多客户端在时间边界时同时修改记录时间，使用 Redis 事务
+    处理竞争条件，同时设定超时时间，超时取消操作。
+
+    :param conn:        Redis 连接
+    :param name:        日志名
+    :param message:     日志内容
+    :param severity:    日志安全级别
+    :param timeout:     记录操作超时时间，超时取消操作
+    :return:
+    """
     severity = str(SEVERITY.get(severity, severity)).lower()
     destination = 'common:%s:%s' % (name, severity)
     # 使用有序集合存储成功记录当前日志消息时的小时数
